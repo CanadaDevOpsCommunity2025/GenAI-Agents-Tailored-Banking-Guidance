@@ -4,8 +4,8 @@ import streamlit as st
 
 
 def render(on_upload: Callable, on_proceed: Callable[[], None]) -> None:
-    st.subheader("2️⃣ KYC Upload")
-    st.caption("Securely share your document so we can verify your identity.")
+    st.markdown("<h3 style='color:#373737;'>2️⃣ KYC Upload</h3>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#373737;'>Securely share your document so we can verify your identity.</p>", unsafe_allow_html=True)
 
     uploaded_file = st.file_uploader(
         "Upload your ID document",

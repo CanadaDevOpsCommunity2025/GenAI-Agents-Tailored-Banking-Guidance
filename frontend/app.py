@@ -160,12 +160,12 @@ def main() -> None:
         backend_healthy=backend_healthy,
     )
 
-    st.title("🏦 BankBot Crew — Smart Onboarding Assistant")
-    st.write("A multi-agent journey that guides you from signup to tailored product recommendations.")
+    st.markdown("<h1 style='color:#373737;'>🏦 BankBot Crew — Smart Onboarding Assistant</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#373737;'>A multi-agent journey that guides you from signup to tailored product recommendations.</p>", unsafe_allow_html=True)
 
     task_id = st.session_state.get("task_id")
     if task_id:
-        st.caption(f"Active Task ID: `{task_id}`")
+        st.markdown(f"<p style='color:#373737;'>Active Task ID: `{task_id}`</p>", unsafe_allow_html=True)
 
     step = st.session_state.get("step", "start")
 

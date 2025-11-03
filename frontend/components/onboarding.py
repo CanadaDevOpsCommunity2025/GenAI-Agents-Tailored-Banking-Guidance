@@ -4,15 +4,20 @@ import streamlit as st
 
 
 def render(on_start: Callable[[str], None]) -> None:
-    st.subheader("1️⃣ Start Onboarding")
-    st.caption("Kick things off so the crew can tailor your journey.")
+    # A common dark gray hex code
+    DARK_GRAY_HEX = "#373737" 
 
-    st.text_input(
-        "Email or User ID",
-        key="user_id",
-        placeholder="e.g. alex.lee@example.com",
-        help="We use this to link your onboarding task across agents.",
+    st.markdown(
+        f'<h3 style="color: {DARK_GRAY_HEX};">1️⃣ Start Onboarding</h3>',
+        unsafe_allow_html=True
     )
+    st.markdown(
+    f'<p style="font-size: small; color: {DARK_GRAY_HEX};">Kick things off so the crew can tailor your journey.</p>',
+    unsafe_allow_html=True
+    )
+
+    st.markdown("<p style='color:#373737; margin-top:0rem; margin-bottom:-30rem;'>Email or User ID</p>", unsafe_allow_html=True)
+    st.text_input("", key="user_id", placeholder="e.g. alex.lee@example.com")
 
     start_clicked = st.button(
         "Start Onboarding",
