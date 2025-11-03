@@ -1,162 +1,76 @@
 #!/bin/bash
 
-# Setup script for GenAI Agents Tailored Banking Guidance project
-
-echo "Creating project directories..."
-
 # Create directories
 mkdir -p gateway
-mkdir -p agents/agent1
-mkdir -p agents/agent2
+mkdir -p agents/orchestrator
+mkdir -p agents/conversation
+mkdir -p agents/kyc
+mkdir -p agents/advisor
+mkdir -p agents/audit
 mkdir -p mocks
 mkdir -p frontend
 mkdir -p monitoring
 mkdir -p .github/workflows
 
-echo "Creating placeholder files..."
+# Create Docker Compose file
+cat > docker-compose.yml <<EOF
+version: '3.8'
 
-# gateway files
-cat > gateway/Dockerfile <<EOF
-# Gateway Dockerfile
-FROM node:18-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-CMD ["npm", "start"]
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  gateway:
+    build: ./gateway
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  orchestrator:
+    build: ./agents/orchestrator
+    depends_on:
+      - redis
+    deploy:
+      replicas: 1
+
+  conversation:
+    build: ./agents/conversation
+    depends_on:
+      - redis
+    deploy:
+      replicas: 2
+
+  kyc:
+    build: ./agents/kyc
+    depends_on:
+      - redis
+    deploy:
+      replicas: 2
+
+  advisor:
+    build: ./agents/advisor
+    depends_on:
+      - redis
+    deploy:
+      replicas: 2
+
+  audit:
+    build: ./agents/audit
+    depends_on:
+      - redis
+    deploy:
+      replicas: 1
 EOF
 
-cat > gateway/package.json <<EOF
-{
-  "name": "gateway",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  }
-}
+# Create .env.example
+cat > .env.example <<EOF
+REDIS_URL=redis://redis:6379/0
 EOF
 
-cat > gateway/index.js <<EOF
-console.log("Gateway service running...");
-EOF
-
-# agents/agent1 files
-cat > agents/agent1/Dockerfile <<EOF
-# Agent1 Dockerfile
-FROM python:3.10-slim
-WORKDIR /app
-COPY requirements.txt ./
-RUN pip install -r requirements.txt
-COPY . .
-CMD ["python", "agent1.py"]
-EOF
-
-cat > agents/agent1/requirements.txt <<EOF
-# Agent1 Python dependencies
-flask
-openai
-EOF
-
-cat > agents/agent1/agent1.py <<EOF
-print("Agent1 service running...")
-EOF
-
-# agents/agent2 files
-cat > agents/agent2/Dockerfile <<EOF
-# Agent2 Dockerfile
-FROM python:3.10-slim
-WORKDIR /app
-COPY requirements.txt ./
-RUN pip install -r requirements.txt
-COPY . .
-CMD ["python", "agent2.py"]
-EOF
-
-cat > agents/agent2/requirements.txt <<EOF
-# Agent2 Python dependencies
-flask
-openai
-EOF
-
-cat > agents/agent2/agent2.py <<EOF
-print("Agent2 service running...")
-EOF
-
-# mocks files
-cat > mocks/Dockerfile <<EOF
-# Mocks Dockerfile
-FROM node:18-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-CMD ["npm", "start"]
-EOF
-
-cat > mocks/package.json <<EOF
-{
-  "name": "mocks",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  }
-}
-EOF
-
-cat > mocks/index.js <<EOF
-console.log("Mocks service running...");
-EOF
-
-# frontend files
-cat > frontend/Dockerfile <<EOF
-# Frontend Dockerfile
-FROM node:18-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-CMD ["npm", "run", "dev"]
-EOF
-
-cat > frontend/package.json <<EOF
-{
-  "name": "frontend",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "dev": "vite"
-  }
-}
-EOF
-
-cat > frontend/index.html <<EOF
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>GenAI Agents Frontend</title>
-</head>
-<body>
-<div id="app">Welcome to GenAI Agents Frontend</div>
-<script type="module" src="/main.js"></script>
-</body>
-</html>
-EOF
-
-cat > frontend/main.js <<EOF
-console.log("Frontend running...");
-EOF
-
-# monitoring files
-cat > monitoring/Dockerfile <<EOF
-# Monitoring Dockerfile
-FROM prom/prometheus
-COPY prometheus.yml /etc/prometheus/prometheus.yml
-EOF
-
+# Create Prometheus config
 cat > monitoring/prometheus.yml <<EOF
 global:
   scrape_interval: 15s
@@ -164,91 +78,302 @@ global:
 scrape_configs:
   - job_name: 'gateway'
     static_configs:
-      - targets: ['gateway:3000']
-  - job_name: 'agent1'
+      - targets: ['gateway:8000']
+
+  - job_name: 'agents'
     static_configs:
-      - targets: ['agent1:5000']
-  - job_name: 'agent2'
-    static_configs:
-      - targets: ['agent2:5000']
+      - targets: ['orchestrator:8001', 'conversation:8002', 'kyc:8003', 'advisor:8004', 'audit:8005']
 EOF
 
-# .github/workflows files
-cat > .github/workflows/ci.yml <<EOF
-name: CI
+# Create Gateway FastAPI service
+mkdir -p gateway
+cat > gateway/Dockerfile <<EOF
+FROM python:3.11-slim
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+WORKDIR /app
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: 18
-      - name: Install dependencies and build gateway
-        working-directory: ./gateway
-        run: |
-          npm install
-          npm run build || echo "No build script"
-      - name: Install dependencies and test agents
-        run: |
-          echo "Add agent tests here"
+RUN pip install fastapi uvicorn redis
+
+COPY main.py .
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 EOF
 
-# docker-compose.yml
-cat > docker-compose.yml <<EOF
-version: '3.8'
+cat > gateway/main.py <<EOF
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import redis
+import os
+import json
+import uuid
 
-services:
-  gateway:
-    build: ./gateway
-    ports:
-      - "3000:3000"
-    env_file:
-      - .env
-  agent1:
-    build: ./agents/agent1
-    ports:
-      - "5001:5000"
-    env_file:
-      - .env
-  agent2:
-    build: ./agents/agent2
-    ports:
-      - "5002:5000"
-    env_file:
-      - .env
-  mocks:
-    build: ./mocks
-    ports:
-      - "4000:4000"
-  frontend:
-    build: ./frontend
-    ports:
-      - "8080:8080"
-  monitoring:
-    build: ./monitoring
-    ports:
-      - "9090:9090"
+app = FastAPI()
+
+redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+r = redis.from_url(redis_url)
+
+class OnboardingRequest(BaseModel):
+    user_id: str
+
+@app.post("/start_onboarding")
+async def start_onboarding(request: OnboardingRequest):
+    task_id = str(uuid.uuid4())
+    message = {
+        "task_id": task_id,
+        "user_id": request.user_id,
+        "step": "start"
+    }
+    r.publish("orchestrator", json.dumps(message))
+    return {"message": "Onboarding started", "task_id": task_id}
 EOF
 
-# .env.example
-cat > .env.example <<EOF
-# Environment variables example
+# Create agent templates using Redis Pub/Sub
 
-OPENAI_API_KEY=your_openai_api_key_here
-DATABASE_URL=your_database_url_here
+# Orchestrator agent
+mkdir -p agents/orchestrator
+cat > agents/orchestrator/Dockerfile <<EOF
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install redis
+
+COPY orchestrator.py .
+
+CMD ["python", "orchestrator.py"]
 EOF
 
-echo "Project setup complete!"
-echo "Directory structure:"
-tree -L 3
+cat > agents/orchestrator/orchestrator.py <<EOF
+import redis
+import os
+import json
+import time
 
-exit 0
+redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+r = redis.from_url(redis_url)
+pubsub = r.pubsub()
+pubsub.subscribe("orchestrator")
+
+def publish_next_step(channel, message):
+    r.publish(channel, json.dumps(message))
+
+print("Orchestrator started and listening...")
+
+for message in pubsub.listen():
+    if message['type'] != 'message':
+        continue
+    data = json.loads(message['data'])
+    task_id = data["task_id"]
+    user_id = data["user_id"]
+    step = data.get("step")
+
+    if step == "start":
+        print(f"Orchestrator: Starting onboarding for user {user_id}")
+        # Trigger conversation agent
+        publish_next_step("conversation", {"task_id": task_id, "user_id": user_id, "step": "conversation_start"})
+
+    elif step == "conversation_done":
+        print(f"Orchestrator: Conversation done for user {user_id}")
+        # Trigger KYC agent
+        publish_next_step("kyc", {"task_id": task_id, "user_id": user_id, "step": "kyc_start"})
+
+    elif step == "kyc_done":
+        print(f"Orchestrator: KYC done for user {user_id}")
+        # Trigger advisor agent
+        publish_next_step("advisor", {"task_id": task_id, "user_id": user_id, "step": "advisor_start"})
+
+    elif step == "advisor_done":
+        print(f"Orchestrator: Advisor done for user {user_id}")
+        # Trigger audit agent
+        publish_next_step("audit", {"task_id": task_id, "user_id": user_id, "step": "audit_start"})
+
+    elif step == "audit_done":
+        print(f"Orchestrator: Audit done for user {user_id}")
+        print(f"Onboarding completed for user {user_id}")
+EOF
+
+# Conversation agent
+mkdir -p agents/conversation
+cat > agents/conversation/Dockerfile <<EOF
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install redis
+
+COPY conversation.py .
+
+CMD ["python", "conversation.py"]
+EOF
+
+cat > agents/conversation/conversation.py <<EOF
+import redis
+import os
+import json
+import time
+
+redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+r = redis.from_url(redis_url)
+pubsub = r.pubsub()
+pubsub.subscribe("conversation")
+
+def publish_next_step(channel, message):
+    r.publish(channel, json.dumps(message))
+
+print("Conversation agent started and listening...")
+
+for message in pubsub.listen():
+    if message['type'] != 'message':
+        continue
+    data = json.loads(message['data'])
+    task_id = data["task_id"]
+    user_id = data["user_id"]
+    step = data.get("step")
+
+    if step == "conversation_start":
+        print(f"Conversation: Processing conversation for user {user_id}")
+        time.sleep(2)  # Simulate conversation processing
+        publish_next_step("orchestrator", {"task_id": task_id, "user_id": user_id, "step": "conversation_done"})
+EOF
+
+# KYC agent
+mkdir -p agents/kyc
+cat > agents/kyc/Dockerfile <<EOF
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install redis
+
+COPY kyc.py .
+
+CMD ["python", "kyc.py"]
+EOF
+
+cat > agents/kyc/kyc.py <<EOF
+import redis
+import os
+import json
+import time
+
+redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+r = redis.from_url(redis_url)
+pubsub = r.pubsub()
+pubsub.subscribe("kyc")
+
+def publish_next_step(channel, message):
+    r.publish(channel, json.dumps(message))
+
+print("KYC agent started and listening...")
+
+for message in pubsub.listen():
+    if message['type'] != 'message':
+        continue
+    data = json.loads(message['data'])
+    task_id = data["task_id"]
+    user_id = data["user_id"]
+    step = data.get("step")
+
+    if step == "kyc_start":
+        print(f"KYC: Processing KYC for user {user_id}")
+        time.sleep(2)  # Simulate KYC processing
+        publish_next_step("orchestrator", {"task_id": task_id, "user_id": user_id, "step": "kyc_done"})
+EOF
+
+# Advisor agent
+mkdir -p agents/advisor
+cat > agents/advisor/Dockerfile <<EOF
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install redis
+
+COPY advisor.py .
+
+CMD ["python", "advisor.py"]
+EOF
+
+cat > agents/advisor/advisor.py <<EOF
+import redis
+import os
+import json
+import time
+
+redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+r = redis.from_url(redis_url)
+pubsub = r.pubsub()
+pubsub.subscribe("advisor")
+
+def publish_next_step(channel, message):
+    r.publish(channel, json.dumps(message))
+
+print("Advisor agent started and listening...")
+
+for message in pubsub.listen():
+    if message['type'] != 'message':
+        continue
+    data = json.loads(message['data'])
+    task_id = data["task_id"]
+    user_id = data["user_id"]
+    step = data.get("step")
+
+    if step == "advisor_start":
+        print(f"Advisor: Processing advice for user {user_id}")
+        time.sleep(2)  # Simulate advisor processing
+        publish_next_step("orchestrator", {"task_id": task_id, "user_id": user_id, "step": "advisor_done"})
+EOF
+
+# Audit agent
+mkdir -p agents/audit
+cat > agents/audit/Dockerfile <<EOF
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN pip install redis
+
+COPY audit.py .
+
+CMD ["python", "audit.py"]
+EOF
+
+cat > agents/audit/audit.py <<EOF
+import redis
+import os
+import json
+import time
+
+redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+r = redis.from_url(redis_url)
+pubsub = r.pubsub()
+pubsub.subscribe("audit")
+
+def publish_next_step(channel, message):
+    r.publish(channel, json.dumps(message))
+
+print("Audit agent started and listening...")
+
+for message in pubsub.listen():
+    if message['type'] != 'message':
+        continue
+    data = json.loads(message['data'])
+    task_id = data["task_id"]
+    user_id = data["user_id"]
+    step = data.get("step")
+
+    if step == "audit_start":
+        print(f"Audit: Processing audit for user {user_id}")
+        time.sleep(2)  # Simulate audit processing
+        publish_next_step("orchestrator", {"task_id": task_id, "user_id": user_id, "step": "audit_done"})
+EOF
+
+echo "Setup complete!
+
+To start the system, run:
+  docker-compose up --build
+
+To scale agents, for example conversation agent, run:
+  docker-compose up --scale conversation=3 --scale kyc=2 --scale advisor=2 --scale orchestrator=1 --scale audit=1 --build
+
+This will start multiple instances of each agent for scalability."

@@ -1,3 +1,0 @@
-# Agent2 Python dependencies
-flask
-openai

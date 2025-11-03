@@ -1,7 +1,9 @@
-# Gateway Dockerfile
-FROM node:18-alpine
+FROM python:3.11-slim
+
 WORKDIR /app
-COPY package*.json ./
-RUN npm install
-COPY . .
-CMD ["npm", "start"]
+
+RUN pip install fastapi uvicorn redis
+
+COPY main.py .
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
