@@ -1,215 +1,128 @@
+"""Advisor agent scaffold providing placeholder recommendations via LangChain."""
+
 from __future__ import annotations
 
 import json
 import logging
 import os
-import random
-import signal
-import sys
-import threading
-import time
 from typing import Any, Dict, List
 
-import redis
+import requests
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from langchain_community.llms import Ollama
 
-from credit_cards import CREDIT_CARDS
-from genai_client import run_llm
+try:  # pragma: no cover - support package and script execution
+    from .credit_cards import CREDIT_CARDS
+except ImportError:
+    from credit_cards import CREDIT_CARDS
 
-LOG_FORMAT = "[%(asctime)s] [ADVISOR_AGENT] %(levelname)s: %(message)s"
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-logger = logging.getLogger("advisor_agent")
-
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-ADVISOR_CHANNEL = os.getenv("ADVISOR_CHANNEL", "advisor")
-ORCHESTRATOR_CHANNEL = os.getenv("ORCHESTRATOR_CHANNEL", "orchestrator")
-RECOMMENDATION_COUNT = int(os.getenv("ADVISOR_RECOMMENDATIONS", "3"))
-
-
-def connect_redis() -> redis.Redis:
-    logger.info("Connecting to Redis at %s", REDIS_URL)
-    return redis.from_url(REDIS_URL)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s [AdvisorAgent] %(message)s")
+LOGGER = logging.getLogger("advisor_agent")
 
 
-def build_prompt(user_profile: Dict[str, Any], cards: List[Dict[str, str]]) -> str:
-    return f"""
-You are a helpful banking product advisor working for a regulated bank.
-The user is seeking a credit card recommendation as part of an onboarding journey.
+class AdvisorAgent:
+    """Placeholder advisor agent that sketches generic product guidance."""
 
-USER PROFILE:
-{json.dumps(user_profile, indent=2)}
-
-AVAILABLE CREDIT CARDS:
-{json.dumps(cards, indent=2)}
-
-Choose the top {RECOMMENDATION_COUNT} cards that best match the user's intent and profile.
-For each card include the keys: card_name, annual_fee, interest_rate, rewards, requirements, why_recommended.
-Return ONLY valid JSON matching this structure:
-{{
-  "recommendations": [
-    {{
-      "card_name": "...",
-      "annual_fee": "...",
-      "interest_rate": "...",
-      "rewards": "...",
-      "requirements": "...",
-      "why_recommended": "..."
-    }}
-  ]
-}}
-    """.strip()
-
-
-def validate_recommendations(payload: Dict[str, Any]) -> Dict[str, Any]:
-    recommendations = payload.get("recommendations")
-    if not isinstance(recommendations, list):
-        raise ValueError("Missing recommendations list.")
-
-    cleaned: List[Dict[str, str]] = []
-    for item in recommendations[:RECOMMENDATION_COUNT]:
-        if not isinstance(item, dict):
-            continue
-        required_keys = {"card_name", "annual_fee", "interest_rate", "rewards", "requirements", "why_recommended"}
-        if not required_keys.issubset(item):
-            continue
-        normalized = {key: str(item.get(key, "")).strip() for key in required_keys}
-        if any(not normalized[key] for key in required_keys):
-            continue
-        cleaned.append(normalized)
-
-    if len(cleaned) < RECOMMENDATION_COUNT:
-        raise ValueError("Insufficient structured recommendations.")
-
-    return {"recommendations": cleaned}
-
-
-def fallback_recommendations() -> Dict[str, Any]:
-    choices = random.sample(CREDIT_CARDS, k=min(RECOMMENDATION_COUNT, len(CREDIT_CARDS)))
-    enriched = []
-    for card in choices:
-        enriched.append(
-            {
-                **card,
-                "why_recommended": "Recommended by rule-based fallback due to unavailable advisor response.",
-            }
+    def __init__(self, model_name: str = None) -> None:
+        self.model_name = model_name or os.getenv("ADVISOR_AGENT_MODEL", "llama3")
+        self.base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.enable_llm = os.getenv("ENABLE_OLLAMA", "false").lower() in {"1", "true", "yes"}
+        self.llm = Ollama(model=self.model_name, base_url=self.base_url) if self.enable_llm else None
+        self.prompt = PromptTemplate(
+            input_variables=["user_profile", "products"],
+            template=(
+                "You are the advisor agent for the BankBot Crew platform.\n"
+                "Review the JSON user profile and available products.\n"
+                "Return ONLY JSON with keys: recommendations (list of strings), rationale.\n"
+                "User Profile: {user_profile}\n"
+                "Available Products: {products}"
+            ),
         )
-    return {"recommendations": enriched}
+        self.chain = LLMChain(llm=self.llm, prompt=self.prompt, verbose=False) if self.enable_llm and self.llm else None
 
+    def run(self, input_data: Dict[str, Any]) -> str:
+        """Generate a generic advisor response given structured input."""
+        user_profile = input_data.get("user_profile", {})
+        products: List[Dict[str, Any]] = input_data.get("products") or CREDIT_CARDS[:3]
+        LOGGER.info("Starting advisor agent run for intent: %s", user_profile.get("intent"))
 
-def recommend_credit_cards(user_profile: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = build_prompt(user_profile, CREDIT_CARDS)
-    logger.info("Prompting LLM for advisor recommendations.")
-    response = run_llm(prompt)
+        if not self.enable_llm:
+            LOGGER.info("LLM disabled for AdvisorAgent; returning scripted response.")
+            return json.dumps(self._fallback_response(products))
 
-    if isinstance(response, dict) and "error" in response:
-        logger.error("LLM returned error: %s", response)
-        return fallback_recommendations()
+        if not _is_ollama_available(self.base_url):
+            LOGGER.warning("Ollama not reachable; returning fallback advisor response.")
+            return json.dumps(self._fallback_response(products))
 
-    try:
-        validated = validate_recommendations(response)
-        logger.info("Validated recommendations from LLM.")
-        return validated
-    except Exception as exc:
-        logger.error("Failed to validate LLM response (%s). Falling back.", exc)
-        return fallback_recommendations()
-
-
-def publish_result(redis_client: redis.Redis, payload: Dict[str, Any]) -> None:
-    message = json.dumps(payload, default=str)
-    redis_client.publish(ORCHESTRATOR_CHANNEL, message)
-    logger.info("Published advisor result to orchestrator.")
-
-
-def handle_message(redis_client: redis.Redis, message: Dict[str, Any]) -> None:
-    task_id = message.get("task_id")
-    user_id = message.get("user_id")
-    step = message.get("step")
-    user_profile = message.get("user_profile", {})
-
-    valid_steps = {"advisor_start", "advisor_query"}
-    if step not in valid_steps:
-        logger.debug("Ignoring message with step=%s", step)
-        return
-
-    if not task_id or not user_id:
-        logger.error("Invalid advisor message payload: %s", message)
-        return
-
-    logger.info("Processing advisor_start for task_id=%s user_id=%s", task_id, user_id)
-    recommendations = recommend_credit_cards(user_profile)
-
-    outgoing = {
-        "task_id": task_id,
-        "user_id": user_id,
-        "step": "advisor_done",
-        "result": recommendations,
-    }
-    publish_result(redis_client, outgoing)
-
-
-def listen_for_messages() -> None:
-    redis_client = connect_redis()
-    pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
-    pubsub.subscribe(ADVISOR_CHANNEL)
-    logger.info("Subscribed to Redis channel '%s'", ADVISOR_CHANNEL)
-
-    stop_event = threading.Event()
-
-    def shutdown(signum: int, frame: Any) -> None:
-        logger.info("Received signal %s, shutting down advisor agent.", signum)
-        stop_event.set()
-        pubsub.close()
-
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
-
-    while not stop_event.is_set():
         try:
-            message = pubsub.get_message(timeout=1.0)
-            if not message:
-                continue
-            data = message.get("data")
-            if isinstance(data, bytes):
-                data = data.decode("utf-8")
-            if not data:
-                continue
-            logger.info("Received message from advisor channel: %s", data)
-            try:
-                payload = json.loads(data)
-            except json.JSONDecodeError:
-                logger.error("Failed to decode advisor message: %s", data)
-                continue
-            handle_message(redis_client, payload)
-        except redis.ConnectionError as exc:
-            logger.error("Redis connection error: %s. Retrying in 5 seconds.", exc)
-            time.sleep(5)
-            redis_client = connect_redis()
-            pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
-            pubsub.subscribe(ADVISOR_CHANNEL)
-        except Exception as exc:  # pragma: no cover
-            logger.exception("Unexpected error in advisor loop: %s", exc)
+            if not self.chain:
+                raise RuntimeError("Advisor chain is not initialised.")
+            response = self.chain.invoke(
+                {
+                    "user_profile": json.dumps(user_profile, default=str),
+                    "products": json.dumps(products, default=str),
+                }
+            )
+            output = response.strip() if isinstance(response, str) else str(response)
+            if not output:
+                raise ValueError("Advisor agent produced an empty response.")
+            LOGGER.debug("Advisor agent raw response: %s", output)
+            return output
+        except Exception as exc:  # pragma: no cover - defensive safety net
+            LOGGER.exception("Advisor agent failed: %s", exc)
+            return json.dumps(self._fallback_response(products))
 
-    logger.info("Advisor agent stopped.")
-
-
-def simulate_mode() -> None:
-    logger.info("Simulation mode activated.")
-    sample_profile = {
-        "full_name": "Simulated User",
-        "dob": "1990-01-01",
-        "country": "Canada",
-        "intent": "credit_card",
-        "preferences": "cashback and low fees",
-    }
-    recommendations = recommend_credit_cards(sample_profile)
-    logger.info("Simulation recommendations: %s", json.dumps(recommendations, indent=2))
-
-
-def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1].lower() == "simulate":
-        simulate_mode()
-        return
-    listen_for_messages()
+    @staticmethod
+    def _fallback_response(products: List[Dict[str, Any]]) -> Dict[str, Any]:
+        cards: List[Dict[str, Any]] = []
+        for index, product in enumerate(products[:3], start=1):
+            if isinstance(product, dict):
+                cards.append(
+                    {
+                        "name": product.get("name", f"Card Option {index}"),
+                        "summary": product.get(
+                            "summary",
+                            product.get("description", "Tailored credit card option awaiting full AI recommendation."),
+                        ),
+                        "rewards": product.get("rewards"),
+                        "annual_fee": product.get("annual_fee"),
+                    }
+                )
+            else:
+                cards.append(
+                    {
+                        "name": f"Card Option {index}",
+                        "summary": str(product),
+                    }
+                )
+        if not cards:
+            cards.append(
+                {
+                    "name": "Tailored Credit Card",
+                    "summary": "AI generated recommendation will appear here once the advisor agent finishes initialization.",
+                }
+            )
+        return {
+            "recommendations": cards,
+            "rationale": "Advisor placeholder response while AI services warm up.",
+        }
 
 
 if __name__ == "__main__":
-    main()
+    sample_profile = {
+        "user_id": "demo-user",
+        "intent": "credit_card",
+        "preferences": {"rewards": "cashback", "annual_fee": "low"},
+    }
+    agent = AdvisorAgent()
+    print(agent.run({"user_profile": sample_profile}))
+
+
+def _is_ollama_available(base_url: str) -> bool:
+    try:
+        response = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=0.5)
+        return response.ok
+    except requests.RequestException:
+        return False
