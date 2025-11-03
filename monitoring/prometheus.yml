@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'gateway'
+    static_configs:
+      - targets: ['gateway:8000']
+
+  - job_name: 'agents'
+    static_configs:
+      - targets: ['orchestrator:8001', 'conversation:8002', 'kyc:8003', 'advisor:8004', 'audit:8005']

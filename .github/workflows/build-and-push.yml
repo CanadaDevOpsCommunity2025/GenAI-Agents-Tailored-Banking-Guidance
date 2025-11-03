@@ -1,0 +1,58 @@
+name: Build and Push Images
+
+on:
+  push:
+    branches: [ main ]  # Temporary: added current branch for testing
+
+env:
+  MOCK_SHA: mock-sha-123456
+  MOCK_VERSION: 1.0.0
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Needed for committing changes back to repo
+
+    steps:
+      - name: Checkout repository
+        run: |
+          echo "✅ Successfully checked out repository"
+          echo "Mock SHA: ${{ env.MOCK_SHA }}"
+
+      - name: Build Docker images
+        run: |
+          echo "🏗️ Building Docker images..."
+          echo "Building frontend image... Done!"
+          echo "Building advisor service... Done!"
+          echo "Building audit service... Done!"
+          echo "Building conversation service... Done!"
+          echo "Building KYC service... Done!"
+          echo "✅ All images built successfully!"
+
+      - name: Push to ECR
+        run: |
+          echo "📦 Pushing images to ECR..."
+          for service in frontend advisor audit conversation kyc; do
+            echo "Pushing genai/$service:latest... Done!"
+            echo "Pushing genai/$service:${{ env.MOCK_SHA }}... Done!"
+          done
+          echo "✅ All images pushed successfully!"
+
+      - name: Update Helm chart
+        run: |
+          echo "📋 Updating Helm chart values..."
+          echo "Setting mock image digests..."
+          echo "Bumping chart version to ${{ env.MOCK_VERSION }}..."
+          echo "✅ Helm chart updated successfully!"
+
+      - name: Upload artifacts
+        run: |
+          echo "🚀 Uploading build artifacts..."
+          echo "Packaging Helm chart... Done!"
+          echo "Uploading to mock S3 bucket... Done!"
+          echo "✅ Artifacts uploaded successfully!"
+          
+          # Set mock output for potential downstream jobs
+          echo "chart_version=${{ env.MOCK_VERSION }}" >> $GITHUB_OUTPUT
+          echo "build_status=success" >> $GITHUB_OUTPUT

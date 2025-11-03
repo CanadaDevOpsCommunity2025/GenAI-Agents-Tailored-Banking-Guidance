@@ -1,0 +1,45 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ENABLE_OLLAMA=true
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_URL=http://ollama:11434
+      - LOG_LEVEL=INFO
+      - ENABLE_AUDIT_LLM=false
+      - ENABLE_KYC_LLM=false
+    volumes:
+      - audit_logs:/app/audit_logs
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      - GATEWAY_URL=http://gateway:8000
+      - STATUS_POLL_INTERVAL=5
+      - STATUS_POLL_TIMEOUT=600
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+volumes:
+  ollama:
+  audit_logs:

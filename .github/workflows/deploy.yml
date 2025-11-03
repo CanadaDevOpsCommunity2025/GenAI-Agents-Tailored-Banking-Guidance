@@ -1,0 +1,58 @@
+name: Deploy to EKS
+
+on:
+  workflow_dispatch:  # Manual trigger
+    branches: [ main, onimisi/gh_actions ]  # Restrict to main branch
+
+env:
+  AWS_REGION: us-east-1
+  HELM_CHART_BUCKET: s3://helm-chart-e107d0a4
+
+permissions:
+  id-token: write # Needed for AWS authentication
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Download latest chart from S3
+      - name: Download Helm chart
+        run: |
+          # Get the latest chart version from S3
+          latest_chart=$(aws s3 ls ${HELM_CHART_BUCKET}/ | sort | tail -n 1 | awk '{print $4}')
+          aws s3 cp "${HELM_CHART_BUCKET}/${latest_chart}" .
+          echo "Downloaded chart: ${latest_chart}"
+          echo "CHART_PATH=${latest_chart}" >> $GITHUB_ENV
+
+      # Deploy to EKS using Bitovi action
+      - name: Deploy to EKS
+        uses: bitovi/github-actions-deploy-eks-helm@v1.2.4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          cluster-name: ${{ secrets.EKS_CLUSTER_NAME }}
+          config-files: ${{ env.CHART_PATH }}
+          chart-path: ./
+          namespace: genai
+          create-namespace: "true"
+          atomic: "true"
+          timeout: "5m"
+          values: |
+            global:
+              environment: production
+          
+      # Print deployment status
+      - name: Print deployment status
+        run: |
+          # The Bitovi action already configured kubectl for us
+          echo "Pod Status:"
+          kubectl get pods -n genai
