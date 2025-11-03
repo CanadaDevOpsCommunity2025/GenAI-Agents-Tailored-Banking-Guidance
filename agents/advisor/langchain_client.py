@@ -6,7 +6,6 @@ import os
 from typing import Any, Dict, List, Optional
 
 from langchain_community.chat_models import ChatOllama
-from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models.base import BaseLanguageModel
 
@@ -145,27 +144,25 @@ def get_credit_card_recommendations(
                 temperature=0.7,
             )
 
-        parser = JsonOutputParser()
         prompt = _build_prompt_template().partial(recommendation_count=target_count)
-        chain = prompt | llm | parser
 
-        logger.info("Invoking LangChain chain for case_id=%s", case_id)
-        response = chain.invoke(
-            {
-                "case_id": case_id,
-                "address": address,
-                "yearly_income": yearly_income,
-                "q1_credit_history": q1_credit_history,
-                "q2_payment_style": q2_payment_style,
-                "q3_cashback": q3_cashback,
-                "q4_travel": q4_travel,
-                "q5_simple_card": q5_simple_card,
-                "available_cards": cards_json,
-            }
-        )
+        inputs = {
+            "case_id": case_id,
+            "address": address,
+            "yearly_income": yearly_income,
+            "q1_credit_history": q1_credit_history,
+            "q2_payment_style": q2_payment_style,
+            "q3_cashback": q3_cashback,
+            "q4_travel": q4_travel,
+            "q5_simple_card": q5_simple_card,
+            "available_cards": cards_json,
+        }
 
-        if not isinstance(response, dict):
-            raise ValueError(f"Expected dict response, got {type(response)}")
+        logger.info("Invoking ChatOllama for case_id=%s", case_id)
+        messages = prompt.format_messages(**inputs)
+        raw_response = llm.invoke(messages)
+        text_response = getattr(raw_response, "content", str(raw_response))
+        response = _coerce_json(text_response)
 
         recommendations = response.get("recommendations", [])
         if not isinstance(recommendations, list):
@@ -192,3 +189,43 @@ def get_credit_card_recommendations(
     except Exception as exc:
         logger.error("Error in LangChain recommendation: %s", exc, exc_info=True)
         raise
+
+
+def _coerce_json(raw_text: str) -> Dict[str, Any]:
+    """Best-effort extraction of JSON from LLM output."""
+    import re
+
+    if not raw_text:
+        raise ValueError("Empty response from LLM.")
+
+    candidates: List[str] = []
+
+    fenced = re.findall(r"```json\\s*(.*?)```", raw_text, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates.extend(fenced)
+
+    start = raw_text.find("{")
+    end = raw_text.rfind("}")
+    if start != -1 and end != -1 and start < end:
+        candidates.append(raw_text[start : end + 1])
+
+    errors: List[str] = []
+    for snippet in candidates:
+        try:
+            return json.loads(snippet)
+        except json.JSONDecodeError as exc:
+            errors.append(str(exc))
+
+    # Attempt to remove leading commentary lines and retry.
+    cleaned_lines = []
+    for line in raw_text.splitlines():
+        if line.strip().startswith("//"):
+            continue
+        cleaned_lines.append(line)
+    cleaned_text = "\n".join(cleaned_lines)
+    try:
+        return json.loads(cleaned_text)
+    except json.JSONDecodeError as exc:
+        errors.append(str(exc))
+
+    raise ValueError(f"Unable to parse LLM response as JSON. Errors: {errors}. Raw output: {raw_text[:2000]}")
