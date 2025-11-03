@@ -155,6 +155,48 @@ variable "tags" {
   default     = {}
 }
 
+variable "redis_image_repository" {
+  description = "Redis image repository override if you prefer a private build."
+  type        = string
+  default     = ""
+}
+
+variable "redis_image_tag" {
+  description = "Redis image tag to deploy."
+  type        = string
+  default     = ""
+}
+
+variable "create_helm_bucket" {
+  description = "Set to false to skip creating the S3 bucket used for storing Helm charts."
+  type        = bool
+  default     = true
+}
+
+variable "helm_bucket_name" {
+  description = "Optional explicit name for the Helm chart S3 bucket. Leave blank to auto-generate."
+  type        = string
+  default     = "helm_chart"
+}
+
+variable "helm_bucket_force_destroy" {
+  description = "Allow Terraform to delete the Helm bucket even if it still contains objects."
+  type        = bool
+  default     = false
+}
+
+variable "helm_bucket_enable_versioning" {
+  description = "Enable object versioning on the Helm chart bucket to keep historical chart releases."
+  type        = bool
+  default     = true
+}
+
+variable "helm_bucket_add_random_suffix" {
+  description = "Append a random suffix to the Helm bucket name for global uniqueness."
+  type        = bool
+  default     = true
+}
+
 variable "enable_remote_state" {
   description = "Set to true to migrate from local state to S3 + DynamoDB for collaboration."
   type        = bool

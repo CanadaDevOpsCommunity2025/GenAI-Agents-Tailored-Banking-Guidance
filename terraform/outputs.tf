@@ -20,3 +20,8 @@ output "kubeconfig_command" {
   value       = "aws eks --region ${var.region} update-kubeconfig --name ${aws_eks_cluster.this.name}"
 }
 
+output "helm_bucket_name" {
+  description = "S3 bucket ready to host packaged Helm charts."
+  value       = coalesce(try(aws_s3_bucket.helm[0].bucket, null), var.helm_bucket_name != "" ? var.helm_bucket_name : null)
+}
+

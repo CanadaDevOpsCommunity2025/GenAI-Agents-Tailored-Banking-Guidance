@@ -13,6 +13,12 @@ provider "aws" {
   }
 }
 
+# Alias provider pinned to us-east-1 for resources that must live there (e.g., S3 bucket for Helm charts)
+provider "aws" {
+  alias  = "use1"
+  region = "us-east-1"
+}
+
 // Local state keeps things simple (and free) for solo use. Uncomment the block below and set enable_remote_state=true
 // along with the remote_state_* variables if you later promote to a shared S3 backend.
 /*
@@ -26,4 +32,3 @@ terraform {
   }
 }
 */
-
