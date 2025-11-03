@@ -7,6 +7,7 @@ import logging
 import os
 import uuid
 from datetime import datetime
+import time
 from typing import Any, Dict, Optional, List
 
 import requests
@@ -148,7 +149,39 @@ class BankBotOrchestrator:
     # ------------------------------------------------------------------
 
     def _run_conversation_step(self, conversation_context: Any) -> str:
+        start_time = time.time()
         context = self._ensure_dict(conversation_context)
+        # CrewAI occasionally supplies the JSON schema for the tool instead of the payload or wraps the payload
+        # under a request envelope. Detect those shapes and recover the real session context we stored earlier.
+        original_context = context
+        for _ in range(5):
+            if context.get("type") == "object" and ("properties" in context or "required" in context):
+                LOGGER.debug("Recovered conversation payload from session state (schema received).")
+                context = self._ensure_dict(self._session_state.get("conversation_context", {}))
+                continue
+            if "request" in context and "session_id" not in context:
+                request_payload = context.get("request")
+                recovered = self._ensure_dict(request_payload)
+                if "raw_output" in recovered and len(recovered) == 1:
+                    LOGGER.debug("Discarded wrapper request payload; using stored conversation context.")
+                    context = self._ensure_dict(self._session_state.get("conversation_context", {}))
+                    continue
+                LOGGER.debug("Unwrapped conversation payload from request wrapper.")
+                context = recovered
+                continue
+            break
+        else:
+            LOGGER.warning("ConversationAgent input exceeded unwrap attempts; falling back to stored payload.")
+            context = self._ensure_dict(self._session_state.get("conversation_context", {}))
+
+        if (
+            context is original_context
+            and "session_id" not in context
+            and "user_profile" not in context
+            and "recent_messages" not in context
+        ):
+            LOGGER.warning("ConversationAgent received unexpected payload shape; using stored conversation context.")
+            context = self._ensure_dict(self._session_state.get("conversation_context", {}))
         result_raw = self.conversation_agent.run(context)
         result = self._ensure_dict(result_raw)
         if "questions" not in result:
@@ -158,9 +191,11 @@ class BankBotOrchestrator:
         self._session_state["conversation_result"] = result
         self._session_state["conversation_summary"] = self._derive_conversation_summary(result)
         self._record_audit_event("ConversationAgent", context, result)
+        self._record_performance("ConversationAgent", time.time() - start_time)
         return json.dumps(result)
 
     def _run_kyc_step(self, _: Any = None) -> str:
+        start_time = time.time()
         documents_raw = self._session_state.get("documents", [])
         documents_summary = self.kyc_agent._summarize_documents(documents_raw)
         user_input = self._session_state.get("user_input", {})
@@ -180,9 +215,11 @@ class BankBotOrchestrator:
         result = self._ensure_dict(result_raw)
         self._session_state["kyc_result"] = result
         self._record_audit_event("KycAgent", payload, result)
+        self._record_performance("KycAgent", time.time() - start_time)
         return json.dumps(result)
 
     def _run_advisor_step(self, _: Any = None) -> str:
+        start_time = time.time()
         user_input = self._session_state.get("user_input", {}) or {}
         if not isinstance(user_input, dict):
             user_input = {}
@@ -218,6 +255,7 @@ class BankBotOrchestrator:
         result = self._ensure_dict(result_raw)
         self._session_state["advisor_result"] = result
         self._record_audit_event("AdvisorAgent", payload, result)
+        self._record_performance("AdvisorAgent", time.time() - start_time)
         return json.dumps(result)
 
     # ------------------------------------------------------------------
@@ -233,6 +271,7 @@ class BankBotOrchestrator:
         """Kick off the CrewAI workflow and return aggregated results."""
         resolved_session_id = session_id or str(uuid.uuid4())
         sanitized_context = self._ensure_dict(conversation_context)
+        sanitized_context = self._sanitize_conversation_context(sanitized_context)
         sanitized_documents = documents or []
         if not isinstance(sanitized_documents, list):
             sanitized_documents = [sanitized_documents]
@@ -248,6 +287,7 @@ class BankBotOrchestrator:
             "conversation_summary": None,
             "audit_summaries": [],
             "user_input": user_profile,
+            "performance": {},
         }
         # The orchestrator always flows data sequentially: Conversation -> KYC -> Advisor -> Audit.
         # Each stage stores its structured output back into _session_state so downstream agents
@@ -317,6 +357,7 @@ class BankBotOrchestrator:
             "logs": logs,
             "audit_events": logs,
             "audit_summaries": self._session_state.get("audit_summaries", []),
+            "performance": self._session_state.get("performance", {}),
         }
         LOGGER.info("Aggregated workflow results for session %s", session_id)
         return final_payload
@@ -324,6 +365,7 @@ class BankBotOrchestrator:
     def _run_fallback_workflow(self) -> Dict[str, Any]:
         """Run a lightweight placeholder workflow when LLMs are disabled."""
         context = self._ensure_dict(self._session_state.get("conversation_context", {}))
+        start_time = time.time()
         conversation_result = self._ensure_dict(self.conversation_agent.run(context))
         if "questions" not in conversation_result:
             questions = self._session_state.get("user_input", {}).get("questions")
@@ -332,6 +374,7 @@ class BankBotOrchestrator:
         self._session_state["conversation_result"] = conversation_result
         self._session_state["conversation_summary"] = self._derive_conversation_summary(conversation_result)
         self._record_audit_event("ConversationAgent", context, conversation_result)
+        self._record_performance("ConversationAgent", time.time() - start_time)
 
         kyc_payload = {
             "user_data": {
@@ -340,9 +383,11 @@ class BankBotOrchestrator:
             },
             "documents": self._session_state.get("documents", []),
         }
+        start_time = time.time()
         kyc_result = self._ensure_dict(self.kyc_agent.run(kyc_payload))
         self._session_state["kyc_result"] = kyc_result
         self._record_audit_event("KycAgent", kyc_payload, kyc_result)
+        self._record_performance("KycAgent", time.time() - start_time)
 
         user_input = self._session_state.get("user_input", {}) or {}
         yearly_income = (
@@ -358,9 +403,11 @@ class BankBotOrchestrator:
             "user_profile": conversation_result,
             "kyc_result": kyc_result,
         }
+        start_time = time.time()
         advisor_result = self._ensure_dict(self.advisor_agent.run(advisor_payload))
         self._session_state["advisor_result"] = advisor_result
         self._record_audit_event("AdvisorAgent", advisor_payload, advisor_result)
+        self._record_performance("AdvisorAgent", time.time() - start_time)
 
         self._record_audit_event(
             "AuditAgent",
@@ -404,6 +451,27 @@ class BankBotOrchestrator:
         except Exception as exc:  # pragma: no cover - defensive logging
             LOGGER.exception("Audit logging failed for stage %s: %s", stage, exc)
 
+    def _record_performance(self, stage: str, duration_seconds: float) -> None:
+        try:
+            duration_ms = int(duration_seconds * 1000)
+        except (TypeError, ValueError):
+            duration_ms = -1
+        if duration_ms > 20000:
+            LOGGER.warning("Stage %s exceeded 20s (duration_ms=%d).", stage, duration_ms)
+        self._session_state.setdefault("performance", {})[stage] = {
+            "duration_ms": duration_ms,
+            "completed_at": datetime.utcnow().isoformat(),
+        }
+
+    def _sanitize_conversation_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        cleaned = {}
+        allowed_keys = {"session_id", "user_profile", "recent_messages", "metadata"}
+        for key in allowed_keys:
+            if key in context:
+                cleaned[key] = context[key]
+        if not cleaned:
+            return context if isinstance(context, dict) else {}
+        return cleaned
     @staticmethod
     def _ensure_dict(payload: Any) -> Dict[str, Any]:
         if isinstance(payload, dict):
