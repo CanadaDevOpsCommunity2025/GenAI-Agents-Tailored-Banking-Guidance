@@ -1,1 +1,7 @@
 .venv
+# Terraform-Specific Files
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+
+# macOS system files
+.DS_Store
